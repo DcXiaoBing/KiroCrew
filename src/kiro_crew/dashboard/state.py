@@ -2405,6 +2405,7 @@ class _ChatSlot:
         "served_model",
         "_session_requested_model",
         "_crew_log_previous_sid",
+        "_crew_log_opened_sid",
         "reasoning_effort",
         "autocompact_pct",
         "mode",
@@ -2673,6 +2674,13 @@ class _ChatSlot:
         # than an earlier store. Cleared once `session/opened` has carried it, so
         # the next supersede of this slot latches afresh. "" = nothing to follow.
         self._crew_log_previous_sid: str = ""
+        # The store a `session/opened` of this slot was last written FOR, recorded
+        # as the edge above is handed over. It is what the slot's next allocation
+        # names as its predecessor: the mapping can be a generation behind while a
+        # replay is pending, and the store's own units carry a wall-clock stamp and
+        # are written by a background writer that may not have run yet. "" = this
+        # process has not opened a crew log for this slot.
+        self._crew_log_opened_sid: str = ""
         # The model id the live session resolved to, for a slot that is
         # inheriting rather than pinning. "" = unknown. Written through
         # `record_served_model`.
@@ -4363,11 +4371,31 @@ class _ChatSlot:
         Keeping the FIRST observation keeps the predecessor a `session/opened` can
         cite, and an empty ``sid`` latches nothing rather than latching a store
         with no name.
-        """
-        if sid and not self._crew_log_previous_sid:
-            self._crew_log_previous_sid = sid
 
-    def take_crew_log_previous(self) -> str:
+        ``sid`` is what the slot's MAPPING answers, and the mapping is a proxy for
+        this question rather than its authority. An allocation whose history replay
+        is pending keeps the prior resumable id there deliberately, so that the id
+        a restart can resume stays durable -- and for that window the mapping names
+        a generation OLDER than the newest store this slot wrote. Latching it makes
+        two successive stores cite one predecessor and leaves the store between
+        them cited by nobody, which is the single chain gap a walker cannot detect:
+        both neighbours are well formed and neither says a store is missing.
+
+        So what this slot last handed to a `session/opened` decides, and ``sid``
+        serves only when that is empty -- a slot this process has not yet opened a
+        crew log for. The slot's own record is the authority because it is the
+        statement of the writer itself, taken at the moment the store became this
+        slot's current one, which no other source observes: the mapping tracks
+        resumability instead, and the store's own units carry a wall-clock stamp
+        and are written by a background writer that has not run yet.
+        """
+        if self._crew_log_previous_sid:
+            return
+        chosen = self._crew_log_opened_sid or sid
+        if chosen:
+            self._crew_log_previous_sid = chosen
+
+    def take_crew_log_previous(self, *, now_writing: str) -> str:
         """The latched predecessor store id, clearing it as it is handed over.
 
         Read-and-clear, because the value is owed to exactly one
@@ -4375,9 +4403,19 @@ class _ChatSlot:
         slot cite a predecessor two links back and skip the store between them,
         which is the one thing a chain walker cannot detect. Returns ``""`` when
         nothing is latched, which the emitter reads as "no edge to write".
+
+        ``now_writing`` is the store that entry is FOR, and recording it here is
+        what lets the slot's next allocation name a predecessor without consulting
+        anything outside this process. The two belong in one call because they are
+        one handover: the edge cannot be spent without saying which store is
+        becoming this slot's current one, so a caller cannot take the first and
+        forget the second. It is recorded whether or not an entry is written, since
+        it states which store the slot is on rather than what was appended.
         """
         sid = self._crew_log_previous_sid
         self._crew_log_previous_sid = ""
+        if now_writing:
+            self._crew_log_opened_sid = now_writing
         return sid
 
     def forget_session_model_state(self) -> None:
