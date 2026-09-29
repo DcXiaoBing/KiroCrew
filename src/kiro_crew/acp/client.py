@@ -209,9 +209,11 @@ from kiro_crew.agent_sdk.backends import (
 )
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
-from kiro_crew.config.paths import config_dir, kiro_sessions_dir
+from kiro_crew.config.paths import config_dir, kiro_sessions_dir, peek_data_home
 from kiro_crew.constants import (
     COMPACT_WAIT_TIMEOUT_SECS,
+    KIROCREW_SPAWN_HOME_ENV,
+    KIROCREW_SPAWN_INSTANCE_ENV,
     KIROCREW_SPAWNED_ENV,
     KIROCREW_SPAWNED_VALUE,
 )
@@ -274,6 +276,7 @@ from kiro_crew.sandbox import (
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.security.credential_sources import tool_output_fingerprints
 from kiro_crew.sel import sel
+from kiro_crew.session_pid import mint_spawn_instance
 from kiro_crew.session_token_sig import schedule_session_token_publish
 from kiro_crew.skill_usage import get_global_skill_read_observer
 
@@ -10260,6 +10263,12 @@ class AcpClient:
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.
         env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+        # Off-loop: a KIROCREW_HOME override is resolved through Path.resolve().
+        env[KIROCREW_SPAWN_HOME_ENV] = str(await self._to_thread_guarding_sandbox(peek_data_home))
+        # The untracked-runtime reclaim accepts a tree only under a token this
+        # gateway minted and vouches its members by it
+        # (session_pid._marked_group_members); a tree without one can only be reported.
+        env[KIROCREW_SPAWN_INSTANCE_ENV] = mint_spawn_instance()
         # Own browser session per agent process: the CLI resolves a nameless
         # command to one shared ``default`` browser, so without this two agents
         # navigate and close each other's pages (see browser_session_env).

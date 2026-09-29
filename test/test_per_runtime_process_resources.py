@@ -178,19 +178,20 @@ class TestRuntimeNamesItsScope:
         """The scope name and the child's env marker are ONE token.
 
         Read from the source rather than by driving a spawn: the wiring under
-        test is that the token is minted before the cgroup wrap and used by both,
-        and a spawn test would pass just as well with two independent tokens,
+        test is that the token is minted (through the sweep's shared
+        ``mint_spawn_instance``) before the cgroup wrap and used by both, and a
+        spawn test would pass just as well with two independent tokens,
         which is the defect this is against.
         """
         src = Path(sb.__file__).with_name("acp") / "runtime.py"
         body = src.read_text(encoding="utf-8")
-        mint = body.index("spawn_instance = uuid.uuid4().hex[:16]")
+        mint = body.index("spawn_instance = mint_spawn_instance()")
         wrap = body.index("name_scope_unit(argv, spawn_instance)")
         env = body.index("env[KIROCREW_SPAWN_INSTANCE_ENV] = spawn_instance")
         assert mint < wrap, "the token must exist before the scope is named"
         assert wrap < env, "the same token must then travel in the child's env"
         assert (
-            body.count("spawn_instance = uuid.uuid4().hex[:16]") == 1
+            body.count("spawn_instance = mint_spawn_instance()") == 1
         ), "two mints would give the scope and the process different identities"
 
     def test_the_spawn_records_the_unit_only_when_the_wrap_happened(self):

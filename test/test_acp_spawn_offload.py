@@ -37,6 +37,7 @@ import pytest
 
 import kiro_crew.acp.client as client_mod
 import kiro_crew.acp.runtime as runtime_mod
+from kiro_crew import session_pid
 from kiro_crew.acp.client import AcpClient, _resolve_spawn_env
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
@@ -228,6 +229,46 @@ class TestClientSpawnOffLoop:
             assert t is not loop_thread, "inject_xdist_auto_cap ran on the loop thread"
         for t in mkdir_threads:
             assert t is not loop_thread, "mkdir ran on the loop thread:\n" + "\n".join(mkdir_stacks)
+
+
+class TestClientSpawnCarriesItsInstance:
+    """The client spawn stamps a token the orphan sweep will recognise as this gateway's."""
+
+    @pytest.mark.asyncio
+    async def test_env_instance_is_a_minted_token(self, tmp_path) -> None:
+        from kiro_crew.constants import KIROCREW_SPAWN_HOME_ENV, KIROCREW_SPAWN_INSTANCE_ENV
+
+        client = AcpClient(work_dir=tmp_path / "workspace", session_key="k")
+        mock_proc = MagicMock()
+        mock_proc.pid = _UNALLOCATABLE_PID
+        mock_proc.returncode = None
+        seen_env: dict[str, str] = {}
+
+        async def fake_spawn(*_a, **kw):
+            seen_env.update(kw.get("env") or {})
+            return mock_proc
+
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch.object(client_mod, "ensure_agent_materialized"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv",
+                return_value=(["/usr/bin/kiro-cli", "acp"], None),
+            ),
+            patch("asyncio.create_subprocess_exec", side_effect=fake_spawn),
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
+            patch.object(client_mod, "_get_child_pids", return_value=[]),
+            patch.object(client_mod, "peek_data_home", return_value=tmp_path / "home"),
+        ):
+            await client._spawn()
+
+        await _stop_stderr_drain(client)
+
+        assert seen_env.get(KIROCREW_SPAWN_HOME_ENV) == str(tmp_path / "home")
+        instance = seen_env.get(KIROCREW_SPAWN_INSTANCE_ENV)
+        assert instance, "the child env carries no spawn instance"
+        assert instance in session_pid._minted_spawn_instances
 
 
 class TestClientSpawnPidTrackingOffLoop:
@@ -634,6 +675,9 @@ class TestRuntimeSpawnCarriesItsInstance:
         instance = seen_env.get(KIROCREW_SPAWN_INSTANCE_ENV)
         assert instance, "the child env carries no spawn instance"
         assert runtime._process_instance == instance
+        # The orphan sweep vouches an untracked tree only under a token this
+        # gateway minted, so the stamped value must be on the minted record.
+        assert instance in session_pid._minted_spawn_instances
 
 
 class TestRuntimeShieldSurvivesAFailedAppend:

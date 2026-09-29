@@ -24,7 +24,6 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 import weakref
 from collections import deque
 from pathlib import Path
@@ -133,8 +132,9 @@ from kiro_crew.agent_sdk.tool_search import (
 )
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config import live
-from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.config.paths import kiro_agents_dir, peek_data_home
 from kiro_crew.constants import (
+    KIROCREW_SPAWN_HOME_ENV,
     KIROCREW_SPAWN_INSTANCE_ENV,
     KIROCREW_SPAWNED_ENV,
     KIROCREW_SPAWNED_VALUE,
@@ -189,6 +189,7 @@ from kiro_crew.session_pid import (
     _untrack_root_by_identity,
     _untrack_session_pid,
     group_vouching_available,
+    mint_spawn_instance,
     register_protected_pid,
     unregister_protected_pid,
 )
@@ -2715,8 +2716,9 @@ class AcpRuntime:
         # environment further down. One token for both is what lets a reader
         # holding either one reach the other -- a scope resolves to the runtime
         # incarnation inside it, and a process resolves to the scope bounding it.
-        # Random rather than pid-derived so a recycled pid cannot false-match.
-        spawn_instance = uuid.uuid4().hex[:16]
+        # Minted through session_pid so the orphan sweep can recognise it as
+        # this gateway's when it reads it back out of /proc.
+        spawn_instance = mint_spawn_instance()
         # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
         # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
         # No-op + loud warning where cgroup delegation is unavailable. --scope
@@ -2801,6 +2803,8 @@ class AcpRuntime:
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.
         env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+        # Off-loop: a KIROCREW_HOME override is resolved through Path.resolve().
+        env[KIROCREW_SPAWN_HOME_ENV] = str(await self._to_thread_guarding_sandbox(peek_data_home))
         # The incarnation this spawn is (minted above the cgroup wrap, which
         # names the scope after the same token). It has to travel in the child's
         # environment: it is what a teardown reads back out of
